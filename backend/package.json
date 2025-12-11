@@ -1,14 +1,20 @@
 {
   "name": "backend",
-  "module": "index.js",
+  "module": "server.js",
   "type": "module",
   "private": true,
-  "scripts": { "dev": "bun server.js", "start": "bun server.js" },
+  "scripts": {
+    "dev": "bun --hot server.js",
+    "start": "bun server.js"
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "mongoose": "^9.0.0",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1",
+    "validator": "^13.15.23"
   }
 }
