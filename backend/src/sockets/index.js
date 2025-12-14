@@ -11,6 +11,9 @@ import User from "../models/userModel.js";
 import {
   handleDisconnect,
   handleJoinRoom,
+  handleMarkRoomRead,
+  handleMessageDelivered,
+  handleMessageRead,
   handleSendMessage,
   handleTyping,
 } from "./chatHandlers.js";
@@ -81,6 +84,11 @@ export const initializeSocketHandlers = (io) => {
     socket.on("join_room", (data) => handleJoinRoom(socket, data));
     socket.on("send_message", (data) => handleSendMessage(io, socket, data));
     socket.on("typing", (data) => handleTyping(socket, data));
+    socket.on("message_delivered", (data) =>
+      handleMessageDelivered(io, socket, data)
+    );
+    socket.on("message_read", (data) => handleMessageRead(io, socket, data));
+    socket.on("mark_room_read", (data) => handleMarkRoomRead(io, socket, data));
     socket.on("disconnect", () => handleDisconnect(io, socket));
   });
 };

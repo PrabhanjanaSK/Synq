@@ -11,6 +11,7 @@
  */
 
 import Message from "../models/messageModel.js";
+import RoomMember from "../models/roomMemberModel.js";
 import Room from "../models/roomModel.js";
 import User from "../models/userModel.js";
 import { isUserInRoom } from "../utils/room.js";
@@ -81,7 +82,8 @@ export const handleJoinRoom = async (socket, data) => {
  * 2. Check room exists and user is a member
  * 3. Save message to MongoDB
  * 4. Update room's lastMessage cache
- * 5. Broadcast to all users in the room
+ * 5. Increment unreadCount for all OTHER members
+ * 6. Broadcast to all users in the room
  *
  * @param {Object} io - Socket.io server instance
  * @param {Socket} socket - Socket.io socket instance
@@ -129,7 +131,10 @@ export const handleSendMessage = async (io, socket, data) => {
       lastMessageAt: new Date(),
     });
 
+    await RoomMember.incrementUnreadForOthers(room._id, userId);
+
     console.log(`Message saved with ID: ${message._id}`);
+    console.log(`✅ Updated unread counts for other members in ${roomId}`);
 
     // Broadcast message to ALL users in the room (including sender)
     io.to(roomId).emit("receive_message", {
@@ -173,6 +178,103 @@ export const handleTyping = async (socket, data) => {
     });
   } catch (error) {
     console.error("Error in typing:", error);
+  }
+};
+
+// Handle message delivered event
+export const handleMessageDelivered = async (io, socket, data) => {
+  try {
+    const { messageId, roomId } = data;
+
+    if (!messageId) {
+      socket.emit("error", { message: "Message ID is required" });
+      return;
+    }
+
+    // Update message status to Delivered
+    const message = await Message.markAsDelivered(messageId);
+
+    console.log(`✅ Message ${messageId} marked as Delivered`);
+
+    // Broadcast status update to everyone in the room
+    io.to(roomId).emit("message_status_update", {
+      messageId: message._id,
+      status: "Delivered",
+      deliveredAt: message.deliveredAt,
+    });
+  } catch (error) {
+    console.error("Error in message_delivered:", error);
+    socket.emit("error", { message: error.message });
+  }
+};
+
+// Handle message read event (single message)
+export const handleMessageRead = async (io, socket, data) => {
+  try {
+    const { messageId, messageIds, roomId } = data;
+
+    // Support both single message and multiple messages
+    const ids = messageIds || [messageId];
+
+    if (!ids || ids.length === 0) {
+      socket.emit("error", { message: "Message ID(s) required" });
+      return;
+    }
+
+    // Update message(s) status to Read
+    await Message.markAsRead(ids);
+
+    console.log(`✅ ${ids.length} message(s) marked as Read`);
+
+    // Broadcast status update to everyone in the room
+    io.to(roomId).emit("message_status_update", {
+      messageIds: ids,
+      status: "Read",
+      readAt: new Date(),
+    });
+  } catch (error) {
+    console.error("Error in message_read:", error);
+    socket.emit("error", { message: error.message });
+  }
+};
+
+// Handle marking entire room as read (when user opens chat)
+export const handleMarkRoomRead = async (io, socket, data) => {
+  try {
+    const { roomId, userId } = data;
+
+    if (!roomId || !userId) {
+      socket.emit("error", { message: "Room ID and User ID required" });
+      return;
+    }
+
+    // Mark all messages in room as read
+    const result = await Message.markRoomAsRead(roomId, userId);
+
+    // Also reset unread count (reuse existing method)
+    await RoomMember.markAsRead(roomId, userId);
+
+    console.log(
+      `✅ ${result.modifiedCount} messages in ${roomId} marked as Read by ${userId}`
+    );
+
+    // Broadcast to room
+    if (result.messageIds.length > 0) {
+      io.to(roomId).emit("message_status_update", {
+        messageIds: result.messageIds,
+        status: "Read",
+        readAt: new Date(),
+      });
+    }
+
+    // Notify the user that their unread count is reset
+    socket.emit("unread_reset", {
+      roomId,
+      unreadCount: 0,
+    });
+  } catch (error) {
+    console.error("Error in mark_room_read:", error);
+    socket.emit("error", { message: error.message });
   }
 };
 

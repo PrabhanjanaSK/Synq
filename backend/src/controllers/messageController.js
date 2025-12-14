@@ -6,6 +6,7 @@
  */
 
 import Message from "../models/messageModel.js";
+import RoomMember from "../models/roomMemberModel.js";
 
 import { catchAsync } from "../utils/catchAsync.js";
 import { sendSuccess } from "./factory.js";
@@ -15,30 +16,31 @@ import { sendSuccess } from "./factory.js";
  *
  * GET /api/messages/:roomId?limit=50
  */
-export const getMessages = catchAsync(async (req, res, next) => {
+export const getMessages = catchAsync(async (req, res) => {
   const { roomId } = req.params;
-  const limit = parseInt(req.query.limit) || 50;
+  const { limit, before } = req.query;
 
-  // TODO Phase 3: Add auth middleware and uncomment authorization check
-  // const { userId } = req.user;
-  // const isMember = await isUserInRoom(roomId, userId);
-  // if (!isMember) {
-  //   return res.status(403).json({
-  //     status: 'fail',
-  //     message: 'You are not a member of this room',
-  //   });
-  // }
+  // Convert limit to number if provided
+  const options = {
+    limit: limit ? parseInt(limit, 10) : 30,
+    before: before || null,
+  };
 
-  const messages = await Message.find({ roomId })
-    .populate("senderId", "username photo")
-    .sort({ createdAt: -1 })
-    .limit(limit);
+  // Validate limit
+  if (isNaN(options.limit) || options.limit < 1) {
+    return sendFail(res, 400, "Invalid limit parameter");
+  }
 
-  return sendSuccess(res, 200, {
-    results: messages.length,
-    data: {
-      messages: messages.reverse(),
-    },
+  // Validate before timestamp if provided
+  if (before && isNaN(Date.parse(before))) {
+    return sendFail(res, 400, "Invalid before timestamp");
+  }
+
+  const result = await Message.getPaginatedMessages(roomId, options);
+
+  sendSuccess(res, 200, {
+    message: "Messages retrieved successfully",
+    data: result,
   });
 });
 
@@ -49,14 +51,29 @@ export const getMessages = catchAsync(async (req, res, next) => {
  *
  * Returns conversation list with room info and last message.
  */
-export const getUserRooms = catchAsync(async (req, res, next) => {
-  const { userId } = req.user; // From auth middleware (Phase 3)
+export const getUserRooms = catchAsync(async (req, res) => {
+  const { userId } = req.query; // Later from JWT: req.user.id
 
-  // TODO: Implement this using RoomMember model
-  // For now, return placeholder
-  return sendSuccess(res, 200, {
-    data: {
-      rooms: [],
-    },
+  if (!userId) {
+    return sendFail(res, 400, "User ID is required");
+  }
+
+  const conversations = await RoomMember.getUserConversations(userId);
+
+  sendSuccess(res, 200, {
+    message: "Conversations retrieved successfully",
+    data: { conversations },
+  });
+});
+
+export const markAsRead = catchAsync(async (req, res) => {
+  const { roomId } = req.params;
+  const { userId } = req.body; // Later: req.user.id from JWT
+
+  const member = await RoomMember.markAsRead(roomId, userId);
+
+  sendSuccess(res, 200, {
+    message: "Messages marked as read",
+    data: { unreadCount: member.unreadCount, lastReadAt: member.lastReadAt },
   });
 });

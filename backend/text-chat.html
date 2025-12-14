@@ -419,9 +419,10 @@
       let currentUserId = null;
       let currentUsername = null;
       let currentRoomId = null;
-      let onlineUsers = new Map(); // Map<userId, {username, isOnline, lastSeen}>
+      let onlineUsers = new Map();
+      let messageStatusMap = new Map(); // Track message statuses by messageId
 
-      // User ID to username mapping (in real app this comes from backend)
+      // User ID to username mapping
       const userMap = {
         "69312d3c841f0018479557a1": "alice",
         "69312d68841f0018479557a3": "bob",
@@ -476,7 +477,6 @@
 
         log(`🔌 Connecting as ${currentUsername}...`);
 
-        // Connect with userId in query
         socket = io("http://localhost:3000", {
           query: { userId: currentUserId },
           transports: ["websocket", "polling"],
@@ -503,31 +503,27 @@
         document.getElementById("messageInput").disabled = true;
         document.getElementById("sendBtn").disabled = true;
         currentRoomId = null;
+        messageStatusMap.clear();
       }
 
       // ================== Socket Event Listeners ==================
       function setupSocketListeners() {
-        // Connection successful
         socket.on("connect", () => {
           log(`✅ Connected! Socket ID: ${socket.id}`, "success");
           updateStatusBar("Connected", true);
           document.getElementById("sidebar").style.display = "block";
 
-          // Initialize users list
           renderUsersList();
 
-          // Auto-join room if roomId was provided
           const roomId = document.getElementById("roomIdInput").value.trim();
           if (roomId) {
             joinRoom(roomId);
           }
         });
 
-        // NEW: Receive initial online users list from backend
         socket.on("online_users_list", (data) => {
           log(`📋 Received ${data.users.length} online users`, "success");
 
-          // Populate onlineUsers Map with current online status
           data.users.forEach((user) => {
             if (user._id !== currentUserId) {
               onlineUsers.set(user._id, {
@@ -541,13 +537,11 @@
           renderUsersList();
         });
 
-        // Disconnection
         socket.on("disconnect", () => {
           log("❌ Disconnected from server", "error");
           resetUI();
         });
 
-        // User came online
         socket.on("user_online", (data) => {
           const username = userMap[data.userId] || data.userId;
           log(`🟢 ${username} came online`, "success");
@@ -555,7 +549,6 @@
           renderUsersList();
         });
 
-        // User went offline
         socket.on("user_offline", (data) => {
           const username = userMap[data.userId] || data.userId;
           const lastSeen = new Date(data.lastSeen).toLocaleTimeString();
@@ -568,24 +561,78 @@
           renderUsersList();
         });
 
-        // FIXED: Change from "room_joined" to "joined_room" to match backend
         socket.on("joined_room", (data) => {
+          console.log("🎉 Handler started", data);
           log(`✅ Joined room: ${data.roomId}`, "success");
+
+          console.log("🎉 Setting currentRoomId");
           currentRoomId = data.roomId;
+
+          console.log("🎉 Clearing chat area");
           document.getElementById("chatArea").innerHTML = "";
           document.getElementById("chatArea").classList.remove("empty");
+
+          console.log("🎉 Enabling inputs...");
           document.getElementById("messageInput").disabled = false;
           document.getElementById("sendBtn").disabled = false;
+          console.log("🎉 Inputs enabled!");
+
           updateChatHeader();
+          markRoomAsRead();
         });
 
-        // Receive message
+        // ✅ NEW: Receive message + auto-emit delivery receipt
         socket.on("receive_message", (data) => {
-          log(`📩 Message from ${data.senderId.username}`);
+          log(`📩 Message from ${data.senderId.username}: "${data.text}"`);
+
+          // Store initial status
+          messageStatusMap.set(data._id, data.status || "Sent");
+
+          // Display the message
           displayMessage(data);
+
+          // ✅ AUTO-EMIT: Message delivered (if not sent by me)
+          if (data.senderId._id !== currentUserId) {
+            socket.emit("message_delivered", {
+              messageId: data._id,
+              roomId: data.roomId,
+            });
+            log(`✓ Delivery receipt sent for message ${data._id}`, "success");
+
+            // ✅ If chat is currently open, also mark as read
+            if (currentRoomId === data.roomId) {
+              setTimeout(() => {
+                socket.emit("message_read", {
+                  messageId: data._id,
+                  roomId: data.roomId,
+                });
+                log(`✓✓ Read receipt sent for message ${data._id}`, "success");
+              }, 500); // Small delay to simulate reading
+            }
+          }
         });
 
-        // Typing indicator
+        // ✅ NEW: Handle status updates from server
+        socket.on("message_status_update", (data) => {
+          const { messageId, messageIds, status } = data;
+          const ids = messageIds || [messageId];
+
+          ids.forEach((id) => {
+            messageStatusMap.set(id, status);
+            updateMessageStatus(id, status);
+          });
+
+          log(
+            `✓ Status updated to "${status}" for ${ids.length} message(s)`,
+            "success"
+          );
+        });
+
+        // ✅ NEW: Unread count reset confirmation
+        socket.on("unread_reset", (data) => {
+          log(`✅ Unread count reset for room ${data.roomId}`, "success");
+        });
+
         socket.on("user_typing", (data) => {
           const username = userMap[data.userId] || "Someone";
           const indicator = document.getElementById("typingIndicator");
@@ -596,11 +643,50 @@
           }
         });
 
-        // Error
         socket.on("error", (data) => {
           log(`❌ Error: ${data.message}`, "error");
           alert(`Error: ${data.message}`);
         });
+      }
+
+      // ✅ NEW: Mark entire room as read when opening chat
+      function markRoomAsRead() {
+        if (!socket || !currentRoomId || !currentUserId) return;
+
+        socket.emit("mark_room_read", {
+          roomId: currentRoomId,
+          userId: currentUserId,
+        });
+
+        log(`✓ Marking all messages in ${currentRoomId} as read`, "info");
+      }
+
+      // ✅ NEW: Update message status indicator in UI
+      function updateMessageStatus(messageId, status) {
+        const messageElement = document.querySelector(
+          `[data-message-id="${messageId}"]`
+        );
+        if (!messageElement) return;
+
+        const statusIndicator = messageElement.querySelector(".message-status");
+        if (statusIndicator) {
+          statusIndicator.textContent = getStatusIcon(status);
+          statusIndicator.title = status;
+        }
+      }
+
+      // ✅ NEW: Get status icon based on message status
+      function getStatusIcon(status) {
+        switch (status) {
+          case "Sent":
+            return "✓";
+          case "Delivered":
+            return "✓✓";
+          case "Read":
+            return "✓✓"; // You can style this blue in CSS
+          default:
+            return "";
+        }
       }
 
       // ================== Users List ==================
@@ -609,7 +695,7 @@
         usersList.innerHTML = "";
 
         allUsers.forEach((user) => {
-          if (user.id === currentUserId) return; // Don't show self
+          if (user.id === currentUserId) return;
 
           const userInfo = onlineUsers.get(user.id) || { isOnline: false };
           const item = document.createElement("div");
@@ -640,6 +726,13 @@
 
       function openChatWithUser(userId, username) {
         const roomId = `room:${[currentUsername, username].sort().join("_")}`;
+
+        // ✅ Prevent duplicate joins
+        if (currentRoomId === roomId) {
+          log(`Already in room ${roomId}`, "info");
+          return;
+        }
+
         log(`📂 Opening chat with ${username} in room: ${roomId}`);
         joinRoom(roomId);
       }
@@ -656,8 +749,6 @@
           roomId: roomId,
           userId: currentUserId,
         });
-
-        currentRoomId = roomId;
       }
 
       function updateChatHeader() {
@@ -691,12 +782,14 @@
         input.value = "";
       }
 
+      // ✅ UPDATED: Display message with status indicator
       function displayMessage(data) {
         const chatArea = document.getElementById("chatArea");
         const messageDiv = document.createElement("div");
 
         const isSent = data.senderId._id === currentUserId;
         messageDiv.className = `message ${isSent ? "sent" : "received"}`;
+        messageDiv.setAttribute("data-message-id", data._id); // ✅ Track message ID
 
         const senderDiv = document.createElement("div");
         senderDiv.className = "message-sender";
@@ -708,7 +801,17 @@
 
         const timeDiv = document.createElement("div");
         timeDiv.className = "message-time";
-        timeDiv.textContent = new Date(data.createdAt).toLocaleTimeString();
+        const time = new Date(data.createdAt).toLocaleTimeString();
+
+        // ✅ Add status indicator for sent messages
+        const status = messageStatusMap.get(data._id) || data.status || "Sent";
+        const statusIcon = isSent
+          ? ` <span class="message-status" title="${status}">${getStatusIcon(
+              status
+            )}</span>`
+          : "";
+
+        timeDiv.innerHTML = `${time}${statusIcon}`;
 
         messageDiv.appendChild(senderDiv);
         messageDiv.appendChild(textDiv);
@@ -725,7 +828,8 @@
       }
 
       // ================== Typing Indicator ==================
-      let typingTimeout;
+      let typingTimeout; // ✅ Add semicolon here!
+
       document.getElementById("messageInput").addEventListener("input", (e) => {
         if (!socket || !currentRoomId || !currentUserId) return;
 
